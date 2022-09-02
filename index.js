@@ -1,12 +1,15 @@
 const express = require('express');
 const helmet = require("helmet");
 const cors = require("cors");
+const yup = require('yup');
 const monk = require('monk');
 const morgan = require("morgan");
 const path = require('path');
 const rateLimit = require('express-rate-limit');
 const slowDown = require('express-slow-down');
-const { nanoid } = require('nanoid');
+const { v5: uuidv5 } = require('uuid');
+
+require('dotenv').config();
 
 const db = monk(process.env.MONGODB_URI);
 const urls = db.get('urls');
@@ -23,12 +26,6 @@ const PORT = process.env.PORT || 3010;
 
 notFoundPage = "./public/404.html"
 
-app.get('/', (req, res) => {
-	res.json({
-		author: 'Emerson-Britto'
-	});
-});
-
 app.get('/:id', async (req, res, next) => {
   const { id: slug } = req.params;
   try {
@@ -42,9 +39,41 @@ app.get('/:id', async (req, res, next) => {
   }
 });
 
-app.post("/url", (req, res) => {
-	res.json({ msg: "need to implement"})
-})
+const schema = yup.object().shape({
+  slug: yup.string().trim().matches(/^[\w\-]+$/i),
+  url: yup.string().trim().url().required(),
+});
+
+app.post('/url', slowDown({
+  windowMs: 30 * 1000,
+  delayAfter: 1,
+  delayMs: 500,
+}), rateLimit({
+  windowMs: 30 * 1000,
+  max: 1,
+}), async (req, res, next) => {
+  let { slug, url } = req.body;
+  try {
+    await schema.validate({ slug, url });
+    if (url.includes('localhost:3010')) {
+      throw new Error('Stop it');
+    }
+    if (!slug) {
+      slug = uuidv5();
+    } else {
+      const existing = await urls.findOne({ slug });
+      if (existing) {
+        throw new Error('Slug in use');
+      }
+    }
+    slug = slug.toLowerCase();
+    const newUrl = { url, slug };
+    const created = await urls.insert(newUrl);
+    res.json(created);
+  } catch (error) {
+    next(error);
+  }
+});
 
 
 app.use((req, res, next) => {
